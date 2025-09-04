@@ -9,7 +9,7 @@ from aiocache import cached
 import requests
 from urllib.parse import quote
 
-from fastapi import Depends, HTTPException, Request, APIRouter
+from fastapi import Depends, HTTPException, Request, APIRouter, Response
 from fastapi.responses import (
     FileResponse,
     StreamingResponse,
@@ -928,6 +928,43 @@ async def generate_chat_completion(
     finally:
         if not streaming:
             await cleanup_response(r, session)
+
+
+@router.api_route("/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"])
+async def proxy_openai_request(
+    request: Request,
+    path: str,
+    user=Depends(get_verified_user),
+):
+    """Proxy any unmatched OpenAI API request to the configured backend."""
+    if not request.app.state.config.OPENAI_API_BASE_URLS:
+        raise HTTPException(status_code=404, detail="OpenAI API base URL not configured")
+
+    url = request.app.state.config.OPENAI_API_BASE_URLS[0].rstrip("/")
+    key = request.app.state.config.OPENAI_API_KEYS[0] if request.app.state.config.OPENAI_API_KEYS else ""
+
+    forward_url = f"{url}/{path}" if path else url
+
+    headers = {k: v for k, v in request.headers.items() if k.lower() not in {"host", "content-length"}}
+    if key:
+        headers["Authorization"] = f"Bearer {key}"
+
+    data = await request.body() if request.method in {"POST", "PUT", "PATCH"} else None
+
+    try:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=AIOHTTP_CLIENT_TIMEOUT)) as session:
+            async with session.request(
+                request.method,
+                forward_url,
+                headers=headers,
+                data=data,
+                ssl=AIOHTTP_CLIENT_SESSION_SSL,
+            ) as resp:
+                content = await resp.read()
+                return Response(content=content, status_code=resp.status, headers=dict(resp.headers))
+    except Exception as e:
+        log.exception(e)
+        raise HTTPException(status_code=500, detail="Open WebUI: Server Connection Error")
 
 
 async def embeddings(request: Request, form_data: dict, user):
