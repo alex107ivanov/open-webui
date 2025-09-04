@@ -1015,20 +1015,32 @@ async def embeddings(request: Request, form_data: dict, user):
 
 
 @router.api_route("/{path:path}", methods=["GET", "POST", "PUT", "DELETE"])
-async def proxy(path: str, request: Request, user=Depends(get_verified_user)):
-    """
-    Deprecated: proxy all requests to OpenAI API
+async def proxy(
+    path: str,
+    request: Request,
+    url_idx: int = 0,
+    user=Depends(get_verified_user),
+):
+    """Proxy requests to OpenAI-compatible APIs.
+
+    Forwards any request made to `/openai/*` to the configured OpenAI
+    backend. The backend index can be selected with the optional
+    `url_idx` query parameter, matching the behaviour of the `/ollama`
+    proxy endpoint. If `url_idx` is out of range a 400 error is returned.
     """
 
     body = await request.body()
 
-    idx = 0
+    if url_idx < 0 or url_idx >= len(request.app.state.config.OPENAI_API_BASE_URLS):
+        raise HTTPException(status_code=400, detail="Invalid OpenAI base URL index")
+
+    idx = url_idx
     url = request.app.state.config.OPENAI_API_BASE_URLS[idx]
     key = request.app.state.config.OPENAI_API_KEYS[idx]
     api_config = request.app.state.config.OPENAI_API_CONFIGS.get(
         str(idx),
         request.app.state.config.OPENAI_API_CONFIGS.get(
-            request.app.state.config.OPENAI_API_BASE_URLS[idx], {}
+            request.app.state.config.OPENAI_API_BASE_URLS[idx], {},
         ),  # Legacy support
     )
 
